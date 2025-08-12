@@ -100,7 +100,10 @@ def initialize_session_state():
         'customer_name': '',
         'account_names': [],
         # version counter to remount the uploader (clears file after success)
-        'contact_upload_version': 0,
+        'contact_upload_version': 0,       
+        'contact_upload_notice': None,     # new
+        'contact_upload_payload': None,    # new
+
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -189,6 +192,17 @@ def contacts_tab():
         st.info("Complete Initial Setup to enable this section.")
         return
 
+    # If we have a persisted notice from last run, show it once
+    if st.session_state.get('contact_upload_notice'):
+        st.success(st.session_state['contact_upload_notice'])
+        # Optional: show server response for transparency/debug
+        if st.session_state.get('contact_upload_payload') is not None:
+            with st.expander("View server response"):
+                st.json(st.session_state['contact_upload_payload'])
+        # Clear the notice so it only shows once
+        st.session_state['contact_upload_notice'] = None
+        st.session_state['contact_upload_payload'] = None
+
     account = st.selectbox("Account", st.session_state.get('account_names', []), key="contact_account")
 
     st.subheader("Upload new contacts (CSV)")
@@ -197,18 +211,26 @@ def contacts_tab():
     uploader_key = f"contact_upload_{st.session_state.get('contact_upload_version', 0)}"
     contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key=uploader_key)
 
-    # Only enable submit when a file is provided
     submit_disabled = contact_file is None
     if st.button("Submit New Contacts", disabled=submit_disabled):
-        files = {"file": (f"{account}.csv", contact_file.getvalue())}
-        data = {"account": account}
-        with st.spinner("Uploading contacts..."):
-            response = make_api_request("post", "upload_contacts", files=files, data=data)
+        try:
+            files = {"file": (f"{account}.csv", contact_file.getvalue())}
+            data = {"account": account}
+            with st.spinner("Uploading contacts..."):
+                response = make_api_request("post", "upload_contacts", files=files, data=data)
+
             if response:
-                st.success("Contacts uploaded successfully.")
-                # bump version to remount & clear the uploader
+                # Persist a one-shot success message and the payload
+                st.session_state['contact_upload_notice'] = "Contacts uploaded successfully."
+                st.session_state['contact_upload_payload'] = response
+                # Bump version to clear the uploader
                 st.session_state['contact_upload_version'] = st.session_state.get('contact_upload_version', 0) + 1
                 st.rerun()
+            else:
+                st.error("Upload failed. Please check the file and try again.")
+        except Exception as e:
+            st.error(f"Unexpected error during upload: {e}")
+
 
 def offerings_tab():
     st.header("Product Offerings")
