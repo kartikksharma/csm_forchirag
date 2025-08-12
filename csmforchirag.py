@@ -196,9 +196,9 @@ def contacts_tab():
     if st.session_state.get('contact_upload_notice'):
         st.success(st.session_state['contact_upload_notice'])
         # Optional: show server response for transparency/debug
-        if st.session_state.get('contact_upload_payload') is not None:
-            with st.expander("View server response"):
-                st.json(st.session_state['contact_upload_payload'])
+        # if st.session_state.get('contact_upload_payload') is not None:
+        #     with st.expander("View server response"):
+        #         st.json(st.session_state['contact_upload_payload'])
         # Clear the notice so it only shows once
         st.session_state['contact_upload_notice'] = None
         st.session_state['contact_upload_payload'] = None
