@@ -99,6 +99,8 @@ def initialize_session_state():
         'customer_id': '',
         'customer_name': '',
         'account_names': [],
+        # version counter to remount the uploader (clears file after success)
+        'contact_upload_version': 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -127,7 +129,11 @@ def initial_setup_tab():
 
     # Simple connect form
     with st.form("connect_form", clear_on_submit=False):
-        customer_id = st.text_input("Customer ID", value=st.session_state.get('customer_id', ''), help="Unique identifier for the customer.")
+        customer_id = st.text_input(
+            "Customer ID",
+            value=st.session_state.get('customer_id', ''),
+            help="Unique identifier for the customer."
+        )
         connect = st.form_submit_button("Connect to Repo")
 
     if connect:
@@ -187,17 +193,21 @@ def contacts_tab():
 
     st.subheader("Upload new contacts (CSV)")
 
-    # Use a key in session state for the file uploader
-    contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key="contact_upload")
-    if contact_file and st.button("Submit New Contacts"):
+    # Versioned uploader key: remounts (clears file) after success
+    uploader_key = f"contact_upload_{st.session_state.get('contact_upload_version', 0)}"
+    contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key=uploader_key)
+
+    # Only enable submit when a file is provided
+    submit_disabled = contact_file is None
+    if st.button("Submit New Contacts", disabled=submit_disabled):
         files = {"file": (f"{account}.csv", contact_file.getvalue())}
         data = {"account": account}
         with st.spinner("Uploading contacts..."):
             response = make_api_request("post", "upload_contacts", files=files, data=data)
             if response:
                 st.success("Contacts uploaded successfully.")
-                # Clear the file uploader by resetting its key
-                st.session_state["contact_upload"] = None
+                # bump version to remount & clear the uploader
+                st.session_state['contact_upload_version'] = st.session_state.get('contact_upload_version', 0) + 1
                 st.rerun()
 
 def offerings_tab():
