@@ -186,6 +186,8 @@ def contacts_tab():
     account = st.selectbox("Account", st.session_state.get('account_names', []), key="contact_account")
 
     st.subheader("Upload new contacts (CSV)")
+
+    # Use a key in session state for the file uploader
     contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key="contact_upload")
     if contact_file and st.button("Submit New Contacts"):
         files = {"file": (f"{account}.csv", contact_file.getvalue())}
@@ -194,6 +196,9 @@ def contacts_tab():
             response = make_api_request("post", "upload_contacts", files=files, data=data)
             if response:
                 st.success("Contacts uploaded successfully.")
+                # Clear the file uploader by resetting its key
+                st.session_state["contact_upload"] = None
+                st.rerun()
 
 def offerings_tab():
     st.header("Product Offerings")
