@@ -384,8 +384,8 @@ def main():
 
     # Add new tab
 # replace your current tabs tuple in main() with this
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Product Offerings", "Refresh Config", "Usage Tracking"]
+    t1, t2, t3, t4 = st.tabs(
+        ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking"]
     )
     
     with t1:
@@ -394,9 +394,8 @@ def main():
         contacts_tab()
     with t3:
         offerings_tab()
+   # <-- new
     with t4:
-        refresh_config_tab()     # <-- new
-    with t5:
         usage_tracking_tab()
 
 
