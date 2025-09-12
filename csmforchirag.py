@@ -222,7 +222,9 @@ def usage_tracking_tab():
                 st.error(f"Failed to download usage tracking: {e}")
                 logger.error(f"Usage tracking download failed: {e}")
 
+import time
 def refresh_config_tab():
+    """Re-run config generation and live-monitor status (auto-polls for ~7 minutes)."""
     st.header("Refresh Config")
     disabled = not st.session_state.setup_complete
 
@@ -230,56 +232,67 @@ def refresh_config_tab():
         st.info("Complete Initial Setup to enable this section.")
         return
 
-    c1, c2 = st.columns([1, 1])
+    st.write("Click the button below to update config files with the latest product offerings.")
 
-    with c1:
-        if st.button("Start Refresh"):
-            with st.spinner("Triggering config generation..."):
-                resp = make_api_request(
-                    "post",
-                    "refreshconfig",
-                    data={"customer_id": st.session_state['customer_id']}
-                )
-            if resp and resp.get("success"):
-                st.session_state['rc_started_once'] = True
-                st.success("Refresh triggered successfully.")
+    if st.button("Re-run Config Generation", disabled=disabled):
+        with st.spinner("Triggering config generation..."):
+            resp = make_api_request(
+                "post",
+                "refreshconfig",
+                data={"customer_id": st.session_state['customer_id']}
+            )
+
+        if not resp or not resp.get("success"):
+            st.error("Failed to start config generation.")
+            return
+
+        st.success("Launching script and monitoring progress...")
+
+        # UI placeholders
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        # Poll every 2s for up to 7 minutes
+        start = time.time()
+        timeout = 7 * 60
+        while time.time() - start < timeout:
+            time.sleep(2)
+            status_resp = make_api_request(
+                "get",
+                "config_status",
+                params={"customer_id": st.session_state['customer_id']}
+            )
+
+            if not status_resp:
+                status_text.warning("Unable to fetch progress.")
+                continue
+
+            progress = float(status_resp.get("progress", 0.0))
+            raw_status = (status_resp.get("status") or "").strip()
+
+            # Friendly copy (same vibes as your sample)
+            if raw_status.lower().startswith("starting"):
+                pretty = "Content loaded from DB. Generation has started."
+            elif raw_status.lower().startswith("generating"):
+                pretty = "Generating config & JD…"
+            elif raw_status.lower().startswith("completed"):
+                pretty = "Completed"
+            elif raw_status.lower().startswith("error"):
+                pretty = "Error occurred"
             else:
-                st.error("Failed to trigger refresh. See logs for details.")
+                pretty = raw_status or "Unknown"
 
-    with c2:
-        if st.button("Check Status"):
-            with st.spinner("Fetching status..."):
-                resp = make_api_request(
-                    "get",
-                    "config_status",
-                    params={"customer_id": st.session_state['customer_id']}
-                )
-            if resp:
-                st.session_state['rc_last_status'] = {
-                    "status": resp.get("status"),
-                    "progress": float(resp.get("progress", 0.0))
-                }
-                st.session_state['rc_last_error'] = None
-            else:
-                st.session_state['rc_last_error'] = "Failed to fetch status."
+            progress_bar.progress(max(0.0, min(1.0, progress)))
+            status_text.write(f"Status: **{pretty}**")
 
-    st.divider()
-
-    # Status card
-    status = st.session_state.get('rc_last_status')
-    err = st.session_state.get('rc_last_error')
-
-    if err:
-        st.error(err)
-
-    if status:
-        st.subheader("Current Status")
-        st.write(f"**{status['status']}**")
-        st.progress(min(max(status['progress'], 0.0), 1.0))
-    elif st.session_state.get('rc_started_once'):
-        st.info("Refresh triggered. Click **Check Status** to update progress.")
-    else:
-        st.info("Click **Start Refresh** to generate the config for this customer.")
+            if raw_status.lower().startswith("completed"):
+                st.success("Configuration completed successfully.")
+                break
+            if raw_status.lower().startswith("error"):
+                st.error("An error occurred. Check server logs for details.")
+                break
+        else:
+            st.warning("Config generation timed out after 7 minutes. It may still complete in the background.")
 
 
 def contacts_tab():
