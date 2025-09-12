@@ -183,6 +183,40 @@ def initial_setup_tab():
         st.rerun()
 
     # No duplicate details here—sidebar handles the summary.
+def usage_tracking_tab():
+    st.header("Usage Tracking")
+    disabled = not st.session_state.setup_complete
+
+    if disabled:
+        st.info("Complete Initial Setup to enable downloads.")
+        return
+
+    st.info("Download Qpilot usage tracking (5 tables) as a single Excel file.")
+
+    label = f"Download Usage Tracking for {st.session_state['customer_name']}" \
+            if st.session_state['customer_name'] else "Download Usage Tracking"
+
+    if st.button(label):
+        with st.spinner("Preparing usage tracking Excel..."):
+            url = f"{API_BASE}/api/download_usage_tracking"
+            try:
+                resp = requests.get(
+                    url,
+                    headers=HEADERS,
+                    params={"customer_id": st.session_state['customer_id']},
+                    timeout=120
+                )
+                resp.raise_for_status()
+                st.download_button(
+                    label="Click to download",
+                    data=resp.content,
+                    file_name=f"{st.session_state['customer_name'] or 'customer'}_{st.session_state['customer_id']}_Qpilot Usage tracking.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                logger.info(f"Usage tracking downloaded for {st.session_state['customer_name']}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to download usage tracking: {e}")
+                logger.error(f"Usage tracking download failed: {e}")
 
 def contacts_tab():
     st.header("Manage Contacts")
@@ -264,7 +298,6 @@ def offerings_tab():
 def main():
     st.title("CSM Backend Portal - Next Quarter")
 
-    # Sidebar: show details ONLY here (no operation mentioned)
     if st.session_state.setup_complete:
         with st.sidebar:
             st.markdown("### Customer Details")
@@ -272,14 +305,17 @@ def main():
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
-    # Only the three requested tabs
-    t1, t2, t3 = st.tabs(["Initial Setup", "Manage Contacts", "Product Offerings"])
+    # Add new tab
+    t1, t2, t3, t4 = st.tabs(["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking"])
     with t1:
         initial_setup_tab()
     with t2:
         contacts_tab()
     with t3:
         offerings_tab()
+    with t4:
+        usage_tracking_tab()
+
 
 if __name__ == "__main__":
     if not API_KEY:
