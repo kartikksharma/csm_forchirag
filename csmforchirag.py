@@ -102,7 +102,11 @@ def initialize_session_state():
         # version counter to remount the uploader (clears file after success)
         'contact_upload_version': 0,       
         'contact_upload_notice': None,     # new
-        'contact_upload_payload': None,    # new
+        'contact_upload_payload': None,# add inside initialize_session_state() defaults dict
+        'rc_last_status': None,      # {'status': str, 'progress': float}
+        'rc_last_error': None,       # str
+        'rc_started_once': False # bool
+            # new
 
     }
     for k, v in defaults.items():
@@ -218,6 +222,66 @@ def usage_tracking_tab():
                 st.error(f"Failed to download usage tracking: {e}")
                 logger.error(f"Usage tracking download failed: {e}")
 
+def refresh_config_tab():
+    st.header("Refresh Config")
+    disabled = not st.session_state.setup_complete
+
+    if disabled:
+        st.info("Complete Initial Setup to enable this section.")
+        return
+
+    c1, c2 = st.columns([1, 1])
+
+    with c1:
+        if st.button("Start Refresh"):
+            with st.spinner("Triggering config generation..."):
+                resp = make_api_request(
+                    "post",
+                    "refreshconfig",
+                    data={"customer_id": st.session_state['customer_id']}
+                )
+            if resp and resp.get("success"):
+                st.session_state['rc_started_once'] = True
+                st.success("Refresh triggered successfully.")
+            else:
+                st.error("Failed to trigger refresh. See logs for details.")
+
+    with c2:
+        if st.button("Check Status"):
+            with st.spinner("Fetching status..."):
+                resp = make_api_request(
+                    "get",
+                    "config_status",
+                    params={"customer_id": st.session_state['customer_id']}
+                )
+            if resp:
+                st.session_state['rc_last_status'] = {
+                    "status": resp.get("status"),
+                    "progress": float(resp.get("progress", 0.0))
+                }
+                st.session_state['rc_last_error'] = None
+            else:
+                st.session_state['rc_last_error'] = "Failed to fetch status."
+
+    st.divider()
+
+    # Status card
+    status = st.session_state.get('rc_last_status')
+    err = st.session_state.get('rc_last_error')
+
+    if err:
+        st.error(err)
+
+    if status:
+        st.subheader("Current Status")
+        st.write(f"**{status['status']}**")
+        st.progress(min(max(status['progress'], 0.0), 1.0))
+    elif st.session_state.get('rc_started_once'):
+        st.info("Refresh triggered. Click **Check Status** to update progress.")
+    else:
+        st.info("Click **Start Refresh** to generate the config for this customer.")
+
+
 def contacts_tab():
     st.header("Manage Contacts")
     disabled = not st.session_state.setup_complete
@@ -306,7 +370,11 @@ def main():
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
     # Add new tab
-    t1, t2, t3, t4 = st.tabs(["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking"])
+# replace your current tabs tuple in main() with this
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["Initial Setup", "Manage Contacts", "Product Offerings", "Refresh Config", "Usage Tracking"]
+    )
+    
     with t1:
         initial_setup_tab()
     with t2:
@@ -314,7 +382,10 @@ def main():
     with t3:
         offerings_tab()
     with t4:
+        refresh_config_tab()     # <-- new
+    with t5:
         usage_tracking_tab()
+
 
 
 if __name__ == "__main__":
