@@ -24,72 +24,164 @@ st.set_page_config(
 )
 
 # --- Light UI / Styling (Green #00c951 + White) ---
+# st.markdown("""
+# <style>
+# /* Force light */
+# html, body, .stApp { background: #ffffff !important; color: #0f1419 !important; }
+# .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+
+# /* Inputs */
+# .stTextInput>div>div>input,
+# .stSelectbox>div>div>div>div,
+# .stFileUploader,
+# .stNumberInput>div>div>input {
+#     background: #f7f9fb !important;
+#     border-radius: 8px !important;
+# }
+
+# /* Buttons */
+# .stButton>button {
+#     background: #00c951 !important;
+#     color: #ffffff !important;
+#     border: 1px solid #00c951 !important;
+#     border-radius: 8px !important;
+#     font-weight: 600 !important;
+#     padding: 0.6rem 1rem !important;
+#     transition: transform .02s ease, filter .15s ease;
+# }
+# .stButton>button:hover { filter: brightness(0.95); }
+# .stButton>button:active { transform: translateY(1px); }
+
+# /* Tabs – underline style with green accent */
+# .stTabs [data-baseweb="tab-list"] {
+#     gap: 18px;
+#     border-bottom: 1px solid #ececec;
+# }
+# .stTabs [data-baseweb="tab"] {
+#     background: transparent;
+#     border: none;
+#     height: 44px;
+#     padding: 0 6px;
+#     color: #4b5563;
+#     font-weight: 600;
+#     border-bottom: 2px solid transparent;
+#     transition: color .15s ease, border-color .15s ease;
+# }
+# .stTabs [data-baseweb="tab"]:hover { color: #0f1419; border-bottom: 2px solid #e5e7eb; }
+# .stTabs [aria-selected="true"] { color: #00c951; border-bottom: 2px solid #00c951; }
+
+# /* Sidebar labels */
+# .sidebar-title {
+#     font-weight: 700;
+#     font-size: 0.9rem;
+#     text-transform: uppercase;
+#     letter-spacing: 0.04em;
+#     color: #6b7280;
+#     margin-bottom: 0.25rem;
+# }
+# .sidebar-value {
+#     font-weight: 600;
+#     margin-bottom: 0.75rem;
+# }
+
+# /* Info and success boxes – subtle */
+# .stAlert {
+#     border-radius: 10px !important;
+# }
+# </style>
+# """, unsafe_allow_html=True)
+
 st.markdown("""
 <style>
-/* Force light */
-html, body, .stApp { background: #ffffff !important; color: #0f1419 !important; }
+/* Brand accent you can reuse */
+:root, .stApp { --brand: #00c951; }
+
+/* Respect Streamlit theme (no 'force light', no !important) */
+.stApp {
+  background: var(--background-color);
+  color: var(--text-color);
+}
 .block-container { padding-top: 2rem; padding-bottom: 2rem; }
 
 /* Inputs */
-.stTextInput>div>div>input,
-.stSelectbox>div>div>div>div,
-.stFileUploader,
-.stNumberInput>div>div>input {
-    background: #f7f9fb !important;
-    border-radius: 8px !important;
+.stTextInput input,
+.stSelectbox [role="combobox"],
+.stNumberInput input,
+.stFileUploader {
+  background: var(--secondary-background-color);
+  color: var(--text-color);
+  border-radius: 8px;
 }
 
-/* Buttons */
-.stButton>button {
-    background: #00c951 !important;
-    color: #ffffff !important;
-    border: 1px solid #00c951 !important;
-    border-radius: 8px !important;
-    font-weight: 600 !important;
-    padding: 0.6rem 1rem !important;
-    transition: transform .02s ease, filter .15s ease;
+/* Buttons — keep to theme colors and avoid !important */
+.stButton > button {
+  background: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  color: var(--background-color);
+  border-radius: 8px;
+  font-weight: 600;
+  padding: 0.6rem 1rem;
+  transition: transform .02s ease, filter .15s ease;
 }
-.stButton>button:hover { filter: brightness(0.95); }
-.stButton>button:active { transform: translateY(1px); }
+[data-theme="dark"] .stButton > button {
+  /* In dark themes the background may be dark; force readable text */
+  color: #ffffff;
+}
+.stButton > button:hover { filter: brightness(0.95); }
+.stButton > button:active { transform: translateY(1px); }
 
-/* Tabs – underline style with green accent */
+/* Tabs – underline style with brand accent, theme-aware borders/text */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 18px;
-    border-bottom: 1px solid #ececec;
+  gap: 18px;
+  border-bottom: 1px solid rgba(0,0,0,.12);
+}
+[data-theme="dark"] .stTabs [data-baseweb="tab-list"] {
+  border-bottom-color: rgba(255,255,255,.16);
 }
 .stTabs [data-baseweb="tab"] {
-    background: transparent;
-    border: none;
-    height: 44px;
-    padding: 0 6px;
-    color: #4b5563;
-    font-weight: 600;
-    border-bottom: 2px solid transparent;
-    transition: color .15s ease, border-color .15s ease;
+  background: transparent;
+  border: none;
+  height: 44px;
+  padding: 0 6px;
+  color: var(--text-color);
+  opacity: .75;
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+  transition: color .15s ease, border-color .15s ease, opacity .15s ease;
 }
-.stTabs [data-baseweb="tab"]:hover { color: #0f1419; border-bottom: 2px solid #e5e7eb; }
-.stTabs [aria-selected="true"] { color: #00c951; border-bottom: 2px solid #00c951; }
+.stTabs [data-baseweb="tab"]:hover {
+  opacity: 1;
+  border-bottom: 2px solid rgba(0,0,0,.12);
+}
+[data-theme="dark"] .stTabs [data-baseweb="tab"]:hover {
+  border-bottom-color: rgba(255,255,255,.16);
+}
+.stTabs [aria-selected="true"] {
+  color: var(--brand);
+  border-bottom: 2px solid var(--brand);
+  opacity: 1;
+}
 
 /* Sidebar labels */
 .sidebar-title {
-    font-weight: 700;
-    font-size: 0.9rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #6b7280;
-    margin-bottom: 0.25rem;
+  font-weight: 700;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(0,0,0,.55);
+  margin-bottom: 0.25rem;
 }
-.sidebar-value {
-    font-weight: 600;
-    margin-bottom: 0.75rem;
+[data-theme="dark"] .sidebar-title {
+  color: rgba(255,255,255,.6);
 }
+.sidebar-value { font-weight: 600; margin-bottom: 0.75rem; }
 
-/* Info and success boxes – subtle */
-.stAlert {
-    border-radius: 10px !important;
-}
+/* Alerts */
+.stAlert { border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
+
+
 
 # --- Session State ---
 def initialize_session_state():
