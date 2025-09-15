@@ -128,18 +128,19 @@ st.markdown("""
 }
 
 /* Buttons — keep to theme colors and avoid !important */
+/* Buttons — use brand directly */
 .stButton > button {
-  background: var(--primary-color);
-  border: 1px solid var(--primary-color);
-  color: var(--background-color);
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  color: #ffffff;
   border-radius: 8px;
   font-weight: 600;
   padding: 0.6rem 1rem;
   transition: transform .02s ease, filter .15s ease;
 }
-[data-theme="dark"] .stButton > button { color: #ffffff; }
 .stButton > button:hover { filter: brightness(0.95); }
 .stButton > button:active { transform: translateY(1px); }
+
 
 /* Tabs – underline style with brand accent, theme-aware borders/text */
 .stTabs [data-baseweb="tab-list"] {
