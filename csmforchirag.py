@@ -197,7 +197,7 @@ def usage_tracking_tab():
 
     st.info("Download Qpilot usage tracking (5 tables) as a single Excel file.")
 
-    label = f"Download Usage Tracking for {st.session_state['customer_name']}" \
+    label = f"Prepare Usage Tracking data for {st.session_state['customer_name']}" \
             if st.session_state['customer_name'] else "Download Usage Tracking"
 
     if st.button(label):
