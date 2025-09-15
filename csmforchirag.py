@@ -63,7 +63,7 @@ def require_persistent_passcode():
         return
 
     # Minimal login UI
-    st.title("CSM Backend Portal – Sign in")
+    st.title("One time token verification - CSM")
     with st.form("login_form", clear_on_submit=False):
         pwd = st.text_input("Passcode", type="password", help="Enter the shared passcode.")
         submit = st.form_submit_button("Enter")
@@ -77,7 +77,7 @@ def require_persistent_passcode():
                 token,
                 max_age=COOKIE_MAX_AGE_DAYS * 24 * 3600,
                 path="/",
-                samesite="Lax",  # set to "Strict" if you're always same-site
+                same_site="Lax",  # set to "Strict" if you're always same-site
             )
             st.session_state["authed"] = True
             st.success("Signed in.")
