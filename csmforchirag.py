@@ -1,8 +1,14 @@
 import os
+import time
+import json
+import base64
+import hmac
+import hashlib
 import requests
 import streamlit as st
 import logging
 from dotenv import load_dotenv
+from streamlit_cookies_controller import CookieController  # pip install streamlit-cookies-controller
 
 # --- Configuration ---
 logging.basicConfig(
@@ -16,6 +22,79 @@ API_BASE = os.getenv("API_BASE")
 API_KEY = os.getenv("RM_API_KEY")
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
+# ======== Minimal persistent auth (cookie) ========
+# Passcode you provided:
+APP_PASS_PLAIN = os.getenv("APP_PASS_PLAIN")
+# Strong signing key for cookies (set via env in prod). Falls back to RM_API_KEY or a dev string.
+APP_SIGNING_KEY = os.getenv("APP_SIGNING_KEY")
+COOKIE_NAME = "csm_auth_v1"
+COOKIE_MAX_AGE_DAYS = 364  # 
+
+_controller = CookieController()
+
+def _sign(payload: dict) -> str:
+    data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    sig = hmac.new(APP_SIGNING_KEY.encode(), data, hashlib.sha256).hexdigest()
+    token = base64.urlsafe_b64encode(data).decode().rstrip("=") + "." + sig
+    return token
+
+def _verify(token: str) -> bool:
+    try:
+        b64, sig = token.split(".", 1)
+        data = base64.urlsafe_b64decode(b64 + "==")
+        expected = hmac.new(APP_SIGNING_KEY.encode(), data, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected):
+            return False
+        payload = json.loads(data.decode())
+        if "exp" in payload and time.time() > payload["exp"]:
+            return False
+        return True
+    except Exception:
+        return False
+
+def require_persistent_passcode():
+    """
+    Blocks the app until the user authenticates.
+    Once authenticated, a signed cookie keeps them logged in across reloads and restarts.
+    """
+    tok = _controller.get(COOKIE_NAME)
+    if tok and _verify(tok):
+        st.session_state["authed"] = True
+        return
+
+    # Minimal login UI
+    st.title("CSM Backend Portal – Sign in")
+    with st.form("login_form", clear_on_submit=False):
+        pwd = st.text_input("Passcode", type="password", help="Enter the shared passcode.")
+        submit = st.form_submit_button("Enter")
+
+    if submit:
+        if hmac.compare_digest(pwd, APP_PASS_PLAIN):
+            payload = {"v": 1, "iat": int(time.time()), "exp": int(time.time() + COOKIE_MAX_AGE_DAYS * 24 * 3600)}
+            token = _sign(payload)
+            _controller.set(
+                COOKIE_NAME,
+                token,
+                max_age=COOKIE_MAX_AGE_DAYS * 24 * 3600,
+                path="/",
+                samesite="Lax",  # set to "Strict" if you're always same-site
+            )
+            st.session_state["authed"] = True
+            st.success("Signed in.")
+            st.rerun()
+        else:
+            st.error("Incorrect passcode.")
+    st.stop()  # stop rendering rest of app until authed
+
+def logout_button(label: str = "Log out"):
+    if st.button(label, type="secondary"):
+        _controller.remove(COOKIE_NAME)
+        for k in ["authed"]:
+            st.session_state.pop(k, None)
+        st.success("Logged out.")
+        st.rerun()
+# ======== End auth block ========
+
 # --- Streamlit Page Setup ---
 st.set_page_config(
     page_title="CSM Backend Portal - Next Quarter",
@@ -24,72 +103,7 @@ st.set_page_config(
 )
 
 # --- Light UI / Styling (Green #00c951 + White) ---
-# st.markdown("""
-# <style>
-# /* Force light */
-# html, body, .stApp { background: #ffffff !important; color: #0f1419 !important; }
-# .block-container { padding-top: 2rem; padding-bottom: 2rem; }
-
-# /* Inputs */
-# .stTextInput>div>div>input,
-# .stSelectbox>div>div>div>div,
-# .stFileUploader,
-# .stNumberInput>div>div>input {
-#     background: #f7f9fb !important;
-#     border-radius: 8px !important;
-# }
-
-# /* Buttons */
-# .stButton>button {
-#     background: #00c951 !important;
-#     color: #ffffff !important;
-#     border: 1px solid #00c951 !important;
-#     border-radius: 8px !important;
-#     font-weight: 600 !important;
-#     padding: 0.6rem 1rem !important;
-#     transition: transform .02s ease, filter .15s ease;
-# }
-# .stButton>button:hover { filter: brightness(0.95); }
-# .stButton>button:active { transform: translateY(1px); }
-
-# /* Tabs – underline style with green accent */
-# .stTabs [data-baseweb="tab-list"] {
-#     gap: 18px;
-#     border-bottom: 1px solid #ececec;
-# }
-# .stTabs [data-baseweb="tab"] {
-#     background: transparent;
-#     border: none;
-#     height: 44px;
-#     padding: 0 6px;
-#     color: #4b5563;
-#     font-weight: 600;
-#     border-bottom: 2px solid transparent;
-#     transition: color .15s ease, border-color .15s ease;
-# }
-# .stTabs [data-baseweb="tab"]:hover { color: #0f1419; border-bottom: 2px solid #e5e7eb; }
-# .stTabs [aria-selected="true"] { color: #00c951; border-bottom: 2px solid #00c951; }
-
-# /* Sidebar labels */
-# .sidebar-title {
-#     font-weight: 700;
-#     font-size: 0.9rem;
-#     text-transform: uppercase;
-#     letter-spacing: 0.04em;
-#     color: #6b7280;
-#     margin-bottom: 0.25rem;
-# }
-# .sidebar-value {
-#     font-weight: 600;
-#     margin-bottom: 0.75rem;
-# }
-
-# /* Info and success boxes – subtle */
-# .stAlert {
-#     border-radius: 10px !important;
-# }
-# </style>
-# """, unsafe_allow_html=True)
+# st.markdown(""" ... (your commented theme) ... """)
 
 st.markdown("""
 <style>
@@ -123,10 +137,7 @@ st.markdown("""
   padding: 0.6rem 1rem;
   transition: transform .02s ease, filter .15s ease;
 }
-[data-theme="dark"] .stButton > button {
-  /* In dark themes the background may be dark; force readable text */
-  color: #ffffff;
-}
+[data-theme="dark"] .stButton > button { color: #ffffff; }
 .stButton > button:hover { filter: brightness(0.95); }
 .stButton > button:active { transform: translateY(1px); }
 
@@ -171,17 +182,13 @@ st.markdown("""
   color: rgba(0,0,0,.55);
   margin-bottom: 0.25rem;
 }
-[data-theme="dark"] .sidebar-title {
-  color: rgba(255,255,255,.6);
-}
+[data-theme="dark"] .sidebar-title { color: rgba(255,255,255,.6); }
 .sidebar-value { font-weight: 600; margin-bottom: 0.75rem; }
 
 /* Alerts */
 .stAlert { border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
-
-
 
 # --- Session State ---
 def initialize_session_state():
@@ -191,15 +198,12 @@ def initialize_session_state():
         'customer_id': '',
         'customer_name': '',
         'account_names': [],
-        # version counter to remount the uploader (clears file after success)
-        'contact_upload_version': 0,       
-        'contact_upload_notice': None,     # new
-        'contact_upload_payload': None,# add inside initialize_session_state() defaults dict
-        'rc_last_status': None,      # {'status': str, 'progress': float}
-        'rc_last_error': None,       # str
-        'rc_started_once': False # bool
-            # new
-
+        'contact_upload_version': 0,
+        'contact_upload_notice': None,
+        'contact_upload_payload': None,
+        'rc_last_status': None,
+        'rc_last_error': None,
+        'rc_started_once': False
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -225,8 +229,6 @@ def make_api_request(method, endpoint, **kwargs):
 # --- Tabs ---
 def initial_setup_tab():
     st.header("Initial Setup")
-
-    # Simple connect form
     with st.form("connect_form", clear_on_submit=False):
         customer_id = st.text_input(
             "Customer ID",
@@ -241,15 +243,12 @@ def initial_setup_tab():
             return
 
         with st.spinner("Validating path and fetching customer data..."):
-            # 1) Validate path & get ds_root + customer_name
             validate_resp = make_api_request("post", "validate_path", data={"customer_id": customer_id})
             if not validate_resp:
                 return
-
             ds_root = validate_resp.get("ds_root", "")
             customer_name = validate_resp.get("customer_name", "")
 
-            # 2) Fetch accounts
             account_response = make_api_request("post", "accountnames", data={"customer_id": customer_id})
             if not account_response or not account_response.get("accounts"):
                 st.error("No accounts found for this customer ID or failed to fetch them.")
@@ -259,17 +258,11 @@ def initial_setup_tab():
             account_names = account_response["accounts"]
             selected_account = account_names[0]
 
-            # 3) Setup with default operation = "Nothing" (not shown to user)
-            setup_data = {
-                "ds_path": ds_root,
-                "operation": "Nothing",
-                "account": selected_account
-            }
+            setup_data = {"ds_path": ds_root, "operation": "Nothing", "account": selected_account}
             setup_response = make_api_request("post", "setup", data=setup_data)
             if not setup_response:
                 return
 
-        # Persist state and move on
         st.session_state['ds_root'] = ds_root
         st.session_state['customer_id'] = customer_id
         st.session_state['customer_name'] = customer_name
@@ -278,17 +271,14 @@ def initial_setup_tab():
         st.success("Connected successfully.")
         st.rerun()
 
-    # No duplicate details here—sidebar handles the summary.
 def usage_tracking_tab():
     st.header("Usage Tracking")
     disabled = not st.session_state.setup_complete
-
     if disabled:
         st.info("Complete Initial Setup to enable downloads.")
         return
 
     st.info("Download Qpilot usage tracking (5 tables) as a single Excel file.")
-
     label = f"Prepare Usage Tracking data for {st.session_state['customer_name']}" \
             if st.session_state['customer_name'] else "Download Usage Tracking"
 
@@ -314,12 +304,10 @@ def usage_tracking_tab():
                 st.error(f"Failed to download usage tracking: {e}")
                 logger.error(f"Usage tracking download failed: {e}")
 
-import time
 def refresh_config_tab():
     """Re-run config generation and live-monitor status (auto-polls for ~7 minutes)."""
     st.header("Refresh Config")
     disabled = not st.session_state.setup_complete
-
     if disabled:
         st.info("Complete Initial Setup to enable this section.")
         return
@@ -339,12 +327,9 @@ def refresh_config_tab():
             return
 
         st.success("Launching script and monitoring progress...")
-
-        # UI placeholders
         progress_bar = st.progress(0)
         status_text = st.empty()
 
-        # Poll every 2s for up to 7 minutes
         start = time.time()
         timeout = 7 * 60
         while time.time() - start < timeout:
@@ -354,7 +339,6 @@ def refresh_config_tab():
                 "config_status",
                 params={"customer_id": st.session_state['customer_id']}
             )
-
             if not status_resp:
                 status_text.warning("Unable to fetch progress.")
                 continue
@@ -362,7 +346,6 @@ def refresh_config_tab():
             progress = float(status_resp.get("progress", 0.0))
             raw_status = (status_resp.get("status") or "").strip()
 
-            # Friendly copy (same vibes as your sample)
             if raw_status.lower().startswith("starting"):
                 pretty = "Content loaded from DB. Generation has started."
             elif raw_status.lower().startswith("generating"):
@@ -386,31 +369,20 @@ def refresh_config_tab():
         else:
             st.warning("Config generation timed out after 7 minutes. It may still complete in the background.")
 
-
 def contacts_tab():
     st.header("Manage Contacts")
     disabled = not st.session_state.setup_complete
-
     if disabled:
         st.info("Complete Initial Setup to enable this section.")
         return
 
-    # If we have a persisted notice from last run, show it once
     if st.session_state.get('contact_upload_notice'):
         st.success(st.session_state['contact_upload_notice'])
-        # Optional: show server response for transparency/debug
-        # if st.session_state.get('contact_upload_payload') is not None:
-        #     with st.expander("View server response"):
-        #         st.json(st.session_state['contact_upload_payload'])
-        # Clear the notice so it only shows once
         st.session_state['contact_upload_notice'] = None
         st.session_state['contact_upload_payload'] = None
 
     account = st.selectbox("Account", st.session_state.get('account_names', []), key="contact_account")
-
     st.subheader("Upload new contacts (CSV)")
-
-    # Versioned uploader key: remounts (clears file) after success
     uploader_key = f"contact_upload_{st.session_state.get('contact_upload_version', 0)}"
     contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key=uploader_key)
 
@@ -423,10 +395,8 @@ def contacts_tab():
                 response = make_api_request("post", "upload_contacts", files=files, data=data)
 
             if response:
-                # Persist a one-shot success message and the payload
                 st.session_state['contact_upload_notice'] = "Contacts uploaded successfully."
                 st.session_state['contact_upload_payload'] = response
-                # Bump version to clear the uploader
                 st.session_state['contact_upload_version'] = st.session_state.get('contact_upload_version', 0) + 1
                 st.rerun()
             else:
@@ -434,11 +404,9 @@ def contacts_tab():
         except Exception as e:
             st.error(f"Unexpected error during upload: {e}")
 
-
 def offerings_tab():
     st.header("Product Offerings")
     disabled = not st.session_state.setup_complete
-
     if disabled:
         st.info("Complete Initial Setup to enable downloads.")
         return
@@ -465,32 +433,33 @@ def offerings_tab():
 
 # --- Main ---
 def main():
+    # Gate everything behind the persistent passcode
+    require_persistent_passcode()
+
     st.title("CSM Backend Portal - Next Quarter")
 
     if st.session_state.setup_complete:
         with st.sidebar:
+            logout_button()  # <-- add logout button
             st.markdown("### Customer Details")
             st.markdown(f"**Name:** {st.session_state['customer_name']}")
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
+    else:
+        with st.sidebar:
+            logout_button()  # allow logout even before setup
 
-    # Add new tab
-# replace your current tabs tuple in main() with this
     t1, t2, t3, t4 = st.tabs(
         ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking"]
     )
-    
     with t1:
         initial_setup_tab()
     with t2:
         contacts_tab()
     with t3:
         offerings_tab()
-   # <-- new
     with t4:
         usage_tracking_tab()
-
-
 
 if __name__ == "__main__":
     if not API_KEY:
