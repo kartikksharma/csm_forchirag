@@ -111,6 +111,7 @@ st.markdown("""
 
 
 # --- Session State ---
+# --- Session State ---
 def initialize_session_state():
     defaults = {
         'setup_complete': False,
@@ -118,19 +119,22 @@ def initialize_session_state():
         'customer_id': '',
         'customer_name': '',
         'account_names': [],
-        # version counter to remount the uploader (clears file after success)
-        'contact_upload_version': 0,       
-        'contact_upload_notice': None,     # new
-        'contact_upload_payload': None,# add inside initialize_session_state() defaults dict
-        'rc_last_status': None,      # {'status': str, 'progress': float}
-        'rc_last_error': None,       # str
-        'rc_started_once': False # bool
-            # new
+        'contact_upload_version': 0,
+        'contact_upload_notice': None,
+        'contact_upload_payload': None,
+        'rc_last_status': None,
+        'rc_last_error': None,
+        'rc_started_once': False,
 
+        # NEW for Update Ranks
+        'manual_rows': [],             # holds rows for manual entry
+        'ranks_upload_version': 0,     # remounts the Excel uploader after success
+        'ranks_notice': None           # one-shot success toast
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+
 
 initialize_session_state()
 
@@ -361,6 +365,116 @@ def contacts_tab():
         except Exception as e:
             st.error(f"Unexpected error during upload: {e}")
 
+def ranks_tab():
+    """Update initiative ranks via Excel upload or manual entry."""
+    st.header("Update Ranks")
+    disabled = not st.session_state.setup_complete
+
+    if disabled:
+        st.info("Complete Initial Setup to enable this section.")
+        return
+
+    # one-shot toast from a previous successful submit
+    if st.session_state.get('ranks_notice'):
+        st.success(st.session_state['ranks_notice'])
+        st.session_state['ranks_notice'] = None
+
+    account = st.selectbox("Account", st.session_state.get('account_names', []), key="ranks_account")
+
+    mode = st.radio("Choose update method", ["Upload Excel file", "Manual entry"], horizontal=True)
+
+    if mode == "Upload Excel file":
+        st.caption("Your Excel must contain columns: **initiativename** and **rank**.")
+
+        uploader_key = f"ranks_upload_{st.session_state.get('ranks_upload_version', 0)}"
+        excel_file = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key=uploader_key)
+
+        submit_disabled = excel_file is None
+        if st.button("Submit Ranks from Excel", disabled=submit_disabled):
+            import pandas as pd
+            try:
+                df = pd.read_excel(excel_file)
+            except Exception as e:
+                st.error(f"Could not read Excel: {e}")
+                return
+
+            required = {"initiativename", "rank"}
+            if not required.issubset(set(df.columns.str.lower())):
+                st.error("The uploaded Excel must have columns: initiativename, rank")
+                return
+
+            # normalize column names (lowercase)
+            df.columns = [c.lower() for c in df.columns]
+            rows = (
+                df[["initiativename", "rank"]]
+                .dropna(subset=["initiativename", "rank"])
+                .to_dict("records")
+            )
+            if not rows:
+                st.warning("No valid rows found.")
+                return
+
+            payload = {"account": account, "rows": rows}
+            with st.spinner("Updating ranks..."):
+                resp = make_api_request("post", "update_ranks", json=payload)
+
+            if resp:
+                st.session_state['ranks_notice'] = f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s)."
+                # bump version to clear the uploader
+                st.session_state['ranks_upload_version'] = st.session_state.get('ranks_upload_version', 0) + 1
+                st.rerun()
+            else:
+                st.error("Server did not confirm the update. Please check logs.")
+
+    else:  # Manual entry
+        st.caption("Add or edit initiatives below, then submit.")
+
+        # existing rows UI
+        to_delete = None
+        for i, row in enumerate(st.session_state['manual_rows']):
+            c1, c2, c3 = st.columns([5, 2, 1])
+            st.session_state['manual_rows'][i]['initiativename'] = c1.text_input(
+                "Initiative Name",
+                value=row.get("initiativename", ""),
+                key=f"ini_{i}",
+            )
+            # ensure integer ranks >=1
+            st.session_state['manual_rows'][i]['rank'] = c2.number_input(
+                "Rank",
+                min_value=1,
+                value=int(row.get("rank", i + 1)) if str(row.get("rank", "")).isdigit() else 1,
+                key=f"rank_{i}",
+            )
+            if c3.button("Remove", key=f"del_{i}"):
+                to_delete = i
+
+        if to_delete is not None:
+            st.session_state['manual_rows'].pop(to_delete)
+            st.rerun()
+
+        c1, c2 = st.columns([1, 2])
+        if c1.button("Add Initiative"):
+            st.session_state['manual_rows'].append({"initiativename": "", "rank": len(st.session_state['manual_rows']) + 1})
+            st.rerun()
+
+        submit_disabled = not st.session_state['manual_rows']
+        if c2.button("Submit Manual Ranks", disabled=submit_disabled):
+            rows = [r for r in st.session_state['manual_rows'] if str(r.get("initiativename", "")).strip()]
+            if not rows:
+                st.warning("Please add at least one initiative with a name.")
+                return
+
+            payload = {"account": account, "rows": rows}
+            with st.spinner("Updating ranks..."):
+                resp = make_api_request("post", "update_ranks", json=payload)
+
+            if resp:
+                st.success(f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s).")
+                st.session_state['manual_rows'] = []
+            else:
+                st.error("Server did not confirm the update. Please check logs.")
+
+
 
 def offerings_tab():
     st.header("Product Offerings")
@@ -404,7 +518,7 @@ def main():
     # Add new tab
 # replace your current tabs tuple in main() with this
     t1, t2, t3, t4 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking"]
+        ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking", "Update Ranks"]
     )
     
     with t1:
@@ -416,6 +530,8 @@ def main():
    # <-- new
     with t4:
         usage_tracking_tab()
+    with t5:
+        ranks_tab()
 
 
 
