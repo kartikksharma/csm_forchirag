@@ -517,7 +517,7 @@ def main():
 
     # Add new tab
 # replace your current tabs tuple in main() with this
-    t1, t2, t3, t4 = st.tabs(
+    t1, t2, t3, t4, t5 = st.tabs(
         ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking", "Update Ranks"]
     )
     
