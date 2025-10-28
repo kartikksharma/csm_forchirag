@@ -3,6 +3,9 @@ import requests
 import streamlit as st
 import logging
 from dotenv import load_dotenv
+import time
+import hmac
+import re
 
 # --- Configuration ---
 logging.basicConfig(
@@ -109,8 +112,81 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ------------------------------
+# (A) PIN GATE — Streamlit-only
+# ------------------------------
+def _get_pin_from_env() -> str | None:
+    # Prefer env; fall back to st.secrets to support Streamlit Cloud
+    pin = os.getenv("APP_PIN")
+    if not pin:
+        try:
+            pin = st.secrets.get("APP_PIN")  # type: ignore[attr-defined]
+        except Exception:
+            pin = None
+    if pin and isinstance(pin, (int, float)):
+        pin = str(int(pin)).zfill(6)
+    if pin and isinstance(pin, str):
+        pin = pin.strip()
+    return pin
 
-# --- Session State ---
+def _valid_six_digit(pin: str | None) -> bool:
+    return bool(pin and re.fullmatch(r"\d{6}", pin))
+
+def require_pin():
+    """Blocks the UI until a valid 6-digit APP_PIN is provided."""
+    PIN = _get_pin_from_env()
+
+    # Fail closed if misconfigured
+    if not _valid_six_digit(PIN):
+        st.error("Server misconfigured: APP_PIN (6 digits) not set.")
+        logger.critical("APP_PIN missing or invalid; must be 6 digits.")
+        st.stop()
+
+    # Session flags
+    if "authed" not in st.session_state:
+        st.session_state.authed = False
+    if "failed_attempts" not in st.session_state:
+        st.session_state.failed_attempts = 0
+    if "lock_until" not in st.session_state:
+        st.session_state.lock_until = 0.0
+
+    # Lockout check (simple anti-bruteforce)
+    now = time.time()
+    if now < st.session_state.lock_until:
+        wait_s = int(st.session_state.lock_until - now)
+        st.warning(f"Too many incorrect attempts. Try again in {wait_s} second(s).")
+        st.stop()
+
+    if st.session_state.authed:
+        return
+
+    st.title("Enter Access PIN")
+    with st.form("pin_form", clear_on_submit=False):
+        pin_try = st.text_input("6-digit PIN", type="password", max_chars=6)
+        submit = st.form_submit_button("Unlock")
+
+    if submit:
+        if hmac.compare_digest(pin_try.strip(), PIN):  # constant-time compare
+            st.session_state.authed = True
+            st.session_state.failed_attempts = 0
+            st.session_state.lock_until = 0.0
+            st.success("Unlocked")
+            st.experimental_rerun()
+        else:
+            st.session_state.failed_attempts += 1
+            # Lock out for 60s after 5 wrong tries (tweak as desired)
+            if st.session_state.failed_attempts >= 5:
+                st.session_state.lock_until = time.time() + 60
+                st.warning("Too many attempts. Locked for 60 seconds.")
+            else:
+                remaining = 5 - st.session_state.failed_attempts
+                st.error(f"Incorrect PIN. {remaining} attempt(s) remaining.")
+            st.stop()
+
+# Call the gate as early as possible, before any app content/API errors
+require_pin()
+
+
 # --- Session State ---
 def initialize_session_state():
     defaults = {
@@ -134,7 +210,6 @@ def initialize_session_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
 
 initialize_session_state()
 
@@ -209,7 +284,6 @@ def initial_setup_tab():
         st.success("Connected successfully.")
         st.rerun()
 
-    # No duplicate details here—sidebar handles the summary.
 def usage_tracking_tab():
     st.header("Usage Tracking")
     disabled = not st.session_state.setup_complete
@@ -245,7 +319,6 @@ def usage_tracking_tab():
                 st.error(f"Failed to download usage tracking: {e}")
                 logger.error(f"Usage tracking download failed: {e}")
 
-import time
 def refresh_config_tab():
     """Re-run config generation and live-monitor status (auto-polls for ~7 minutes)."""
     st.header("Refresh Config")
@@ -317,7 +390,6 @@ def refresh_config_tab():
         else:
             st.warning("Config generation timed out after 7 minutes. It may still complete in the background.")
 
-
 def contacts_tab():
     st.header("Manage Contacts")
     disabled = not st.session_state.setup_complete
@@ -329,11 +401,6 @@ def contacts_tab():
     # If we have a persisted notice from last run, show it once
     if st.session_state.get('contact_upload_notice'):
         st.success(st.session_state['contact_upload_notice'])
-        # Optional: show server response for transparency/debug
-        # if st.session_state.get('contact_upload_payload') is not None:
-        #     with st.expander("View server response"):
-        #         st.json(st.session_state['contact_upload_payload'])
-        # Clear the notice so it only shows once
         st.session_state['contact_upload_notice'] = None
         st.session_state['contact_upload_payload'] = None
 
@@ -341,7 +408,6 @@ def contacts_tab():
 
     st.subheader("Upload new contacts (CSV)")
 
-    # Versioned uploader key: remounts (clears file) after success
     uploader_key = f"contact_upload_{st.session_state.get('contact_upload_version', 0)}"
     contact_file = st.file_uploader("Choose a CSV file", type=["csv"], key=uploader_key)
 
@@ -354,10 +420,8 @@ def contacts_tab():
                 response = make_api_request("post", "upload_contacts", files=files, data=data)
 
             if response:
-                # Persist a one-shot success message and the payload
                 st.session_state['contact_upload_notice'] = "Contacts uploaded successfully."
                 st.session_state['contact_upload_payload'] = response
-                # Bump version to clear the uploader
                 st.session_state['contact_upload_version'] = st.session_state.get('contact_upload_version', 0) + 1
                 st.rerun()
             else:
@@ -374,7 +438,6 @@ def ranks_tab():
         st.info("Complete Initial Setup to enable this section.")
         return
 
-    # one-shot toast from a previous successful submit
     if st.session_state.get('ranks_notice'):
         st.success(st.session_state['ranks_notice'])
         st.session_state['ranks_notice'] = None
@@ -403,7 +466,6 @@ def ranks_tab():
                 st.error("The uploaded Excel must have columns: initiativename, rank")
                 return
 
-            # normalize column names (lowercase)
             df.columns = [c.lower() for c in df.columns]
             rows = (
                 df[["initiativename", "rank"]]
@@ -420,7 +482,6 @@ def ranks_tab():
 
             if resp:
                 st.session_state['ranks_notice'] = f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s)."
-                # bump version to clear the uploader
                 st.session_state['ranks_upload_version'] = st.session_state.get('ranks_upload_version', 0) + 1
                 st.rerun()
             else:
@@ -429,7 +490,6 @@ def ranks_tab():
     else:  # Manual entry
         st.caption("Add or edit initiatives below, then submit.")
 
-        # existing rows UI
         to_delete = None
         for i, row in enumerate(st.session_state['manual_rows']):
             c1, c2, c3 = st.columns([5, 2, 1])
@@ -438,7 +498,6 @@ def ranks_tab():
                 value=row.get("initiativename", ""),
                 key=f"ini_{i}",
             )
-            # ensure integer ranks >=1
             st.session_state['manual_rows'][i]['rank'] = c2.number_input(
                 "Rank",
                 min_value=1,
@@ -473,8 +532,6 @@ def ranks_tab():
                 st.session_state['manual_rows'] = []
             else:
                 st.error("Server did not confirm the update. Please check logs.")
-
-
 
 def offerings_tab():
     st.header("Product Offerings")
@@ -515,27 +572,22 @@ def main():
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
-    # Add new tab
-# replace your current tabs tuple in main() with this
     t1, t2, t3, t4, t5 = st.tabs(
         ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking", "Update Ranks"]
     )
-    
     with t1:
         initial_setup_tab()
     with t2:
         contacts_tab()
     with t3:
         offerings_tab()
-   # <-- new
     with t4:
         usage_tracking_tab()
     with t5:
         ranks_tab()
 
-
-
 if __name__ == "__main__":
+    # NOTE: API key/base checks now run AFTER the PIN gate to avoid leaking info to unauthenticated users.
     if not API_KEY:
         st.error("API_KEY is not set. Please configure it in your environment variables.")
         logger.critical("RM_API_KEY environment variable not found.")
