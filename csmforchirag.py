@@ -491,7 +491,13 @@ def offerings_tab():
         with st.spinner("Preparing download..."):
             url = f"{API_BASE}/api/download_products_excel"
             try:
-                resp = requests.get(url, headers=HEADERS, timeout=60)
+                resp = requests.get(
+                    url,
+                    headers=HEADERS,
+                    params={"customer_id": st.session_state["customer_id"]},
+                    timeout=60
+                )
+
                 resp.raise_for_status()
                 st.download_button(
                     label="Click to download",
