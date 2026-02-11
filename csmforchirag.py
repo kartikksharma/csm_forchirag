@@ -478,6 +478,108 @@ def contacts_tab():
 #             else:
 #                 st.error("Server did not confirm the update. Please check logs.")
 
+# def ranks_tab():
+#     """Update initiative ranks via Excel upload or manual entry."""
+#     st.header("Update Ranks")
+#     disabled = not st.session_state.setup_complete
+
+#     if disabled:
+#         st.info("Complete Initial Setup to enable this section.")
+#         return
+
+#     if st.session_state.get('ranks_notice'):
+#         st.success(st.session_state['ranks_notice'])
+#         st.session_state['ranks_notice'] = None
+
+#     account = st.selectbox("Account", st.session_state.get('account_names', []), key="ranks_account")
+#     mode = st.radio("Choose update method", ["Upload Excel file", "Manual entry"], horizontal=True)
+
+#     if mode == "Upload Excel file":
+#         # (keep your existing excel upload code as-is)
+#         ...
+#     else:
+#         st.caption("Load initiatives for the selected account, edit ranks, then save.")
+
+#         # Load button
+#         if st.button(f"Click to load {account} initiatives"):
+#             with st.spinner("Loading initiatives..."):
+#                 resp = make_api_request("get", "ranks_table", params={"account": account})
+#             if resp and resp.get("rows") is not None:
+#                 st.session_state['manual_rows'] = resp["rows"]
+#                 st.session_state['confirm_ranks_pending'] = False
+#                 st.success(f"Loaded {len(resp['rows'])} initiative(s).")
+#                 st.rerun()
+#             else:
+#                 st.error("Failed to load initiatives for this account.")
+
+#         if not st.session_state.get('manual_rows'):
+#             st.info("No initiatives loaded yet. Click the button above to load.")
+#             return
+
+#         import pandas as pd
+
+#         df = pd.DataFrame(st.session_state['manual_rows'])
+#         # Ensure consistent columns
+#         if "initiativename" not in df.columns:
+#             st.error("Loaded data missing initiativename.")
+#             return
+#         if "rank" not in df.columns:
+#             df["rank"] = None
+
+#         edited = st.data_editor(
+#             df,
+#             width='stretch',
+#             hide_index=True,
+#             disabled=["initiativename"],
+#             column_config={
+#                 "initiativename": st.column_config.TextColumn("Initiative Name"),
+#                 "rank": st.column_config.NumberColumn("Rank", min_value=1, step=1),
+#             },
+#             key="ranks_editor",
+#         )
+
+#         # Persist edits into session
+#         st.session_state['manual_rows'] = edited.to_dict("records")
+
+#         # Confirmation flow
+#         if not st.session_state.get('confirm_ranks_pending'):
+#             if st.button("Save ranking"):
+#                 st.session_state['confirm_ranks_pending'] = True
+#                 st.rerun()
+#         else:
+#             st.warning(f"Are you sure you want to update ranks {account} initiatives?")
+#             c1, c2 = st.columns(2)
+#             if c1.button("Yes, update ranks"):
+#                 rows = st.session_state['manual_rows']
+#                 # basic validation
+#                 for r in rows:
+#                     if r.get("rank") is None:
+#                         st.error("All rows must have a rank.")
+#                         return
+#                     try:
+#                         r["rank"] = int(r["rank"])
+#                     except Exception:
+#                         st.error("Ranks must be integers.")
+#                         return
+
+#                 payload = {"account": account, "rows": rows}
+#                 with st.spinner("Updating ranks..."):
+#                     resp = make_api_request("post", "update_ranks", json=payload)
+
+#                 if resp:
+#                     st.session_state['ranks_notice'] = f"Ranks updated for {account} (periodid={resp.get('periodid')})."
+#                     st.session_state['manual_rows'] = []
+#                     st.session_state['confirm_ranks_pending'] = False
+#                     st.rerun()
+#                 else:
+#                     st.error("Server did not confirm the update.")
+#                     st.session_state['confirm_ranks_pending'] = False
+
+#             if c2.button("No, cancel"):
+#                 st.session_state['confirm_ranks_pending'] = False
+#                 st.info("Cancelled rank update.")
+#                 st.rerun()
+
 def ranks_tab():
     """Update initiative ranks via Excel upload or manual entry."""
     st.header("Update Ranks")
@@ -495,8 +597,48 @@ def ranks_tab():
     mode = st.radio("Choose update method", ["Upload Excel file", "Manual entry"], horizontal=True)
 
     if mode == "Upload Excel file":
-        # (keep your existing excel upload code as-is)
-        ...
+        st.caption("Your Excel must contain columns: **initiativename** and **rank**.")
+
+        uploader_key = f"ranks_upload_{st.session_state.get('ranks_upload_version', 0)}"
+        excel_file = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key=uploader_key)
+
+        submit_disabled = excel_file is None
+        if st.button("Submit Ranks from Excel", disabled=submit_disabled):
+            import pandas as pd
+            try:
+                df = pd.read_excel(excel_file)
+            except Exception as e:
+                st.error(f"Could not read Excel: {e}")
+                return
+
+            required = {"initiativename", "rank"}
+            if not required.issubset(set(df.columns.str.lower())):
+                st.error("The uploaded Excel must have columns: initiativename, rank")
+                return
+
+            # normalize column names (lowercase)
+            df.columns = [c.lower() for c in df.columns]
+            rows = (
+                df[["initiativename", "rank"]]
+                .dropna(subset=["initiativename", "rank"])
+                .to_dict("records")
+            )
+            if not rows:
+                st.warning("No valid rows found.")
+                return
+
+            payload = {"account": account, "rows": rows}
+            with st.spinner("Updating ranks..."):
+                resp = make_api_request("post", "update_ranks", json=payload)
+
+            if resp:
+                st.session_state['ranks_notice'] = f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s)."
+                # bump version to clear the uploader
+                st.session_state['ranks_upload_version'] = st.session_state.get('ranks_upload_version', 0) + 1
+                st.rerun()
+            else:
+                st.error("Server did not confirm the update. Please check logs.")
+
     else:
         st.caption("Load initiatives for the selected account, edit ranks, then save.")
 
@@ -579,6 +721,7 @@ def ranks_tab():
                 st.session_state['confirm_ranks_pending'] = False
                 st.info("Cancelled rank update.")
                 st.rerun()
+
                 
 def update_recommendation_tab():
     st.header("Update Recommendation")
