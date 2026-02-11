@@ -528,7 +528,7 @@ def ranks_tab():
 
         edited = st.data_editor(
             df,
-            use_container_width=True,
+            width='stretch',
             hide_index=True,
             disabled=["initiativename"],
             column_config={
