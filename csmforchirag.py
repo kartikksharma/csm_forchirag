@@ -47,17 +47,19 @@ st.markdown("""
 
 /* Buttons — keep to theme colors and avoid !important */
 /* Buttons — use brand directly */
-.stButton > button {
+.stButton > button:hover,
+.stButton > button:focus,
+.stButton > button:focus-visible {
   background: var(--brand);
   border: 1px solid var(--brand);
   color: #ffffff;
-  border-radius: 8px;
-  font-weight: 600;
-  padding: 0.6rem 1rem;
-  transition: transform .02s ease, filter .15s ease;
+  filter: none;
+  box-shadow: none;
+  outline: none;
 }
-.stButton > button:hover { filter: brightness(0.95); }
+
 .stButton > button:active { transform: translateY(1px); }
+
 
 
 /* Tabs – underline style with brand accent, theme-aware borders/text */
@@ -125,6 +127,10 @@ def initialize_session_state():
         'rc_last_status': None,
         'rc_last_error': None,
         'rc_started_once': False,
+        'confirm_ranks_pending': False,
+        'recommend_upload_version': 0,
+        'recommend_notice': None,
+
 
         # NEW for Update Ranks
         'manual_rows': [],             # holds rows for manual entry
@@ -137,6 +143,13 @@ def initialize_session_state():
 
 
 initialize_session_state()
+def _ensure_valid_account_selection(selectbox_key: str):
+    accounts = st.session_state.get("account_names", []) or []
+    if not accounts:
+        return
+    cur = st.session_state.get(selectbox_key)
+    if cur not in accounts:
+        st.session_state[selectbox_key] = accounts[0]
 
 # --- API Helper ---
 def make_api_request(method, endpoint, **kwargs):
@@ -152,6 +165,75 @@ def make_api_request(method, endpoint, **kwargs):
         st.error(f"API Request Failed: {e}")
         logger.error(f"API request failed for {url}: {e}")
     return None
+
+def quick_action_usage_tracking():
+    """Quick Action: prepare usage tracking and show download button."""
+    label = (
+        f"Prepare Usage Tracking for {st.session_state['customer_name']}"
+        if st.session_state.get("customer_name")
+        else "Prepare Usage Tracking"
+    )
+
+    if st.button(label, key="qa_usage_prepare"):
+        with st.spinner("Preparing usage tracking Excel..."):
+            url = f"{API_BASE}/api/download_usage_tracking"
+            try:
+                resp = requests.get(
+                    url,
+                    headers=HEADERS,
+                    params={"customer_id": st.session_state["customer_id"]},
+                    timeout=120
+                )
+                resp.raise_for_status()
+
+                st.download_button(
+                    label="Click to download",
+                    data=resp.content,
+                    file_name=(
+                        f"{st.session_state['customer_name'] or 'customer'}_"
+                        f"{st.session_state['customer_id']}_Qpilot Usage tracking.xlsx"
+                    ),
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="qa_usage_download"
+                )
+                logger.info(f"Usage tracking downloaded for {st.session_state['customer_name']}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to download usage tracking: {e}")
+                logger.error(f"Usage tracking download failed: {e}")
+
+
+def quick_action_product_offerings():
+    """Quick Action: prepare product offerings and show download button."""
+    label = (
+        f"Prepare Product Offerings for {st.session_state['customer_name']}"
+        if st.session_state.get("customer_name")
+        else "Prepare Product Offerings"
+    )
+
+    if st.button(label, key="qa_offerings_prepare"):
+        with st.spinner("Preparing product offerings Excel..."):
+            url = f"{API_BASE}/api/download_products_excel"
+            try:
+                resp = requests.get(
+                    url,
+                    headers=HEADERS,
+                    params={"customer_id": st.session_state["customer_id"]},
+                    timeout=60
+                )
+                resp.raise_for_status()
+
+                st.download_button(
+                    label="Click to download",
+                    data=resp.content,
+                    file_name=f"{st.session_state['customer_name'] or 'customer'}_product_offerings.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="qa_offerings_download"
+                )
+                logger.info(f"Product offerings downloaded for {st.session_state['customer_name']}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to download product offerings: {e}")
+                logger.error(f"Download failed: {e}")
+
 
 # --- Tabs ---
 def initial_setup_tab():
@@ -190,26 +272,30 @@ def initial_setup_tab():
             account_names = account_response["accounts"]
             selected_account = account_names[0]
 
-            # 3) Setup with default operation = "Nothing" (not shown to user)
-            setup_data = {
-                "ds_path": ds_root,
-                "operation": "Nothing",
-                "account": selected_account
-            }
-            setup_response = make_api_request("post", "setup", data=setup_data)
-            if not setup_response:
-                return
-
         # Persist state and move on
         st.session_state['ds_root'] = ds_root
         st.session_state['customer_id'] = customer_id
         st.session_state['customer_name'] = customer_name
         st.session_state['account_names'] = account_names
+        for k in ("contact_account", "ranks_account", "rec_account"):
+            st.session_state[k] = account_names[0] if account_names else None
         st.session_state['setup_complete'] = True
         st.success("Connected successfully.")
         st.rerun()
 
     # No duplicate details here—sidebar handles the summary.
+    # --- Quick actions (shown only after successful setup) ---
+    if st.session_state.get("setup_complete"):
+        st.divider()
+        st.markdown("#### Quick actions")
+        st.caption("Use these shortcuts to avoid switching tabs for quick downloads.")
+
+        # Optional: show in a bordered container if your Streamlit version supports it
+        with st.container():
+            # Keep Usage Tracking ABOVE Product Offerings (as requested)
+            quick_action_usage_tracking()
+            quick_action_product_offerings()
+
 def usage_tracking_tab():
     st.header("Usage Tracking")
     disabled = not st.session_state.setup_complete
@@ -349,7 +435,7 @@ def contacts_tab():
     if st.button("Submit New Contacts", disabled=submit_disabled):
         try:
             files = {"file": (f"{account}.csv", contact_file.getvalue())}
-            data = {"account": account}
+            data = {"account": account, "customer_id": st.session_state["customer_id"]}
             with st.spinner("Uploading contacts..."):
                 response = make_api_request("post", "upload_contacts", files=files, data=data)
 
@@ -365,6 +451,54 @@ def contacts_tab():
         except Exception as e:
             st.error(f"Unexpected error during upload: {e}")
 
+@st.dialog("Confirm rank update")
+def confirm_ranks_dialog(account: str):
+    st.warning(f"Are you sure you want to update ranks for **{account}** initiatives?")
+    st.caption("This will overwrite ranks for this account for the current customer.")
+
+    c1, c2 = st.columns(2)
+
+    if c1.button("Yes, update ranks", key=f"dialog_yes_update_{account}"):
+        rows = st.session_state.get("draft_rows", [])
+
+        # Validate ranks
+        for r in rows:
+            if r.get("rank") is None:
+                st.error("All rows must have a rank.")
+                return
+            try:
+                r["rank"] = int(r["rank"])
+            except Exception:
+                st.error("Ranks must be integers.")
+                return
+
+        payload = {
+            "customer_id": st.session_state["customer_id"],
+            "account": account,
+            "rows": rows
+        }
+
+        with st.spinner("Updating ranks..."):
+            resp = make_api_request("post", "update_ranks", json=payload)
+
+        if resp:
+            st.session_state["ranks_notice"] = (
+                f"Ranks updated for {account} (periodid={resp.get('periodid')})."
+            )
+            st.session_state["manual_rows"] = []
+            st.session_state["draft_rows"] = []
+            st.session_state["confirm_ranks_pending"] = False
+            st.rerun()
+        else:
+            st.error("Server did not confirm the update.")
+            st.session_state["confirm_ranks_pending"] = False
+
+    if c2.button("Cancel", key=f"dialog_cancel_update_{account}"):
+        st.session_state["confirm_ranks_pending"] = False
+        st.toast("Cancelled rank update.", icon="🛑")
+        st.rerun()
+
+
 def ranks_tab():
     """Update initiative ranks via Excel upload or manual entry."""
     st.header("Update Ranks")
@@ -374,14 +508,26 @@ def ranks_tab():
         st.info("Complete Initial Setup to enable this section.")
         return
 
-    # one-shot toast from a previous successful submit
     if st.session_state.get('ranks_notice'):
         st.success(st.session_state['ranks_notice'])
         st.session_state['ranks_notice'] = None
 
     account = st.selectbox("Account", st.session_state.get('account_names', []), key="ranks_account")
 
-    mode = st.radio("Choose update method", ["Upload Excel file", "Manual entry"], horizontal=True)
+    # clear loaded initiatives + confirm state when account changes
+    if st.session_state.get("_prev_ranks_account") != account:
+        st.session_state["_prev_ranks_account"] = account
+        st.session_state["manual_rows"] = []
+        st.session_state["confirm_ranks_pending"] = False
+        st.session_state["draft_rows"] = []
+
+    # ✅ Manual first
+    mode = st.radio(
+        "Choose update method",
+        ["Manual entry", "Upload Excel file"],
+        horizontal=True,
+        index=0
+    )
 
     if mode == "Upload Excel file":
         st.caption("Your Excel must contain columns: **initiativename** and **rank**.")
@@ -403,7 +549,6 @@ def ranks_tab():
                 st.error("The uploaded Excel must have columns: initiativename, rank")
                 return
 
-            # normalize column names (lowercase)
             df.columns = [c.lower() for c in df.columns]
             rows = (
                 df[["initiativename", "rank"]]
@@ -414,67 +559,168 @@ def ranks_tab():
                 st.warning("No valid rows found.")
                 return
 
-            payload = {"account": account, "rows": rows}
+            payload = {"customer_id": st.session_state["customer_id"], "account": account, "rows": rows}
             with st.spinner("Updating ranks..."):
                 resp = make_api_request("post", "update_ranks", json=payload)
 
             if resp:
                 st.session_state['ranks_notice'] = f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s)."
-                # bump version to clear the uploader
                 st.session_state['ranks_upload_version'] = st.session_state.get('ranks_upload_version', 0) + 1
                 st.rerun()
             else:
                 st.error("Server did not confirm the update. Please check logs.")
 
-    else:  # Manual entry
-        st.caption("Add or edit initiatives below, then submit.")
+    else:
+        st.caption("Load initiatives for the selected account, edit ranks, then save.")
 
-        # existing rows UI
-        to_delete = None
-        for i, row in enumerate(st.session_state['manual_rows']):
-            c1, c2, c3 = st.columns([5, 2, 1])
-            st.session_state['manual_rows'][i]['initiativename'] = c1.text_input(
-                "Initiative Name",
-                value=row.get("initiativename", ""),
-                key=f"ini_{i}",
-            )
-            # ensure integer ranks >=1
-            st.session_state['manual_rows'][i]['rank'] = c2.number_input(
-                "Rank",
-                min_value=1,
-                value=int(row.get("rank", i + 1)) if str(row.get("rank", "")).isdigit() else 1,
-                key=f"rank_{i}",
-            )
-            if c3.button("Remove", key=f"del_{i}"):
-                to_delete = i
+        # Load button
+        if st.button(f"Click to load {account} initiatives"):
+            with st.spinner("Loading initiatives..."):
+                resp = make_api_request("get", "ranks_table", params={"customer_id": st.session_state["customer_id"], "account": account})
 
-        if to_delete is not None:
-            st.session_state['manual_rows'].pop(to_delete)
-            st.rerun()
-
-        c1, c2 = st.columns([1, 2])
-        if c1.button("Add Initiative"):
-            st.session_state['manual_rows'].append({"initiativename": "", "rank": len(st.session_state['manual_rows']) + 1})
-            st.rerun()
-
-        submit_disabled = not st.session_state['manual_rows']
-        if c2.button("Submit Manual Ranks", disabled=submit_disabled):
-            rows = [r for r in st.session_state['manual_rows'] if str(r.get("initiativename", "")).strip()]
-            if not rows:
-                st.warning("Please add at least one initiative with a name.")
-                return
-
-            payload = {"account": account, "rows": rows}
-            with st.spinner("Updating ranks..."):
-                resp = make_api_request("post", "update_ranks", json=payload)
-
-            if resp:
-                st.success(f"Ranks updated successfully: {resp.get('updated', len(rows))} record(s).")
-                st.session_state['manual_rows'] = []
+            if resp and resp.get("rows") is not None:
+                st.session_state['manual_rows'] = resp["rows"]
+                st.session_state['draft_rows'] = resp["rows"]
+                st.session_state['confirm_ranks_pending'] = False
+                st.success(f"Loaded {len(resp['rows'])} initiative(s).")
+                st.rerun()
             else:
-                st.error("Server did not confirm the update. Please check logs.")
+                st.error("Failed to load initiatives for this account.")
+
+        if not st.session_state.get('manual_rows'):
+            st.info("No initiatives loaded yet. Click the button above to load.")
+            return
+
+        import pandas as pd
+
+        if not st.session_state.get("draft_rows"):
+            st.session_state["draft_rows"] = st.session_state["manual_rows"]
+
+        df = pd.DataFrame(st.session_state["draft_rows"])
+
+        if "initiativename" not in df.columns:
+            st.error("Loaded data missing initiativename.")
+            return
+        if "rank" not in df.columns:
+            df["rank"] = None
+
+        # ✅ FIX: editor inside form so it doesn't rerun on each edit
+        with st.form(key=f"ranks_manual_form_{account}"):
+            edited = st.data_editor(
+                df,
+                width='stretch',
+                hide_index=True,
+                disabled=["initiativename"],
+                column_config={
+                    "initiativename": st.column_config.TextColumn("Initiative Name"),
+                    "rank": st.column_config.NumberColumn("Rank", min_value=1, step=1),
+                },
+                key=f"ranks_editor_{account}",
+            )
+            save_clicked = st.form_submit_button("Save ranking")
+
+        if save_clicked:
+            st.session_state["draft_rows"] = edited.to_dict("records")
+            st.session_state["confirm_ranks_pending"] = True
+
+        # Modal confirmation flow
+        if st.session_state.get("confirm_ranks_pending"):
+            confirm_ranks_dialog(account)
 
 
+
+                
+def update_recommendation_tab():
+    st.header("Update Recommendation")
+    disabled = not st.session_state.setup_complete
+    if disabled:
+        st.info("Complete Initial Setup to enable this section.")
+        return
+
+    if st.session_state.get("recommend_notice"):
+        st.success(st.session_state["recommend_notice"])
+        st.session_state["recommend_notice"] = None
+
+    account = st.selectbox("Account", st.session_state.get('account_names', []), key="rec_account")
+
+    st.subheader("1) Download initiatives template")
+    if st.button(f"Download initiative table for {account}"):
+        with st.spinner("Preparing Excel template..."):
+            url = f"{API_BASE}/api/download_recommendations_template"
+            try:
+                resp = requests.get(url,headers=HEADERS,params={"customer_id": st.session_state["customer_id"], "account": account},timeout=60)
+
+                resp.raise_for_status()
+
+                fname = f"{account}_initiatives_{st.session_state.get('customer_name','customer')}.xlsx"
+                st.download_button(
+                    label="Click to download",
+                    data=resp.content,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to download template: {e}")
+
+    st.subheader("2) Upload updated recommendations")
+    st.caption(
+        "Upload the same Excel template after editing only the recommendation columns. "
+        "The upload must keep the same columns."
+    )
+
+    uploader_key = f"recommend_upload_{st.session_state.get('recommend_upload_version', 0)}"
+    excel_file = st.file_uploader("Upload Excel (.xlsx)", type=["xlsx"], key=uploader_key)
+
+    submit_disabled = excel_file is None
+    if st.button("Submit Recommendations", disabled=submit_disabled):
+        import pandas as pd
+        try:
+            df = pd.read_excel(excel_file)
+        except Exception as e:
+            st.error(f"Could not read Excel: {e}")
+            return
+
+        # Normalize column names
+        df.columns = [c.strip().lower() for c in df.columns]
+
+        required = {
+            "initiativename",
+            "recommendation_withoutcollateral",
+            "recommendation_withcollateral_a",
+            "recommendation_withcollateral_b",
+        }
+        if not required.issubset(set(df.columns)):
+            st.error(
+                "Invalid template. Required columns: initiativename, "
+                "recommendation_withoutcollateral, recommendation_withcollateral_a, "
+                "recommendation_withcollateral_b"
+            )
+            return
+
+        clean = df[list(required)].dropna(subset=["initiativename"]).copy()
+
+
+        clean = clean.where(pd.notnull(clean), None)
+
+        rows = clean.to_dict("records")
+
+        if not rows:
+            st.warning("No valid rows found.")
+            return
+
+        payload = {"customer_id": st.session_state["customer_id"], "account": account, "rows": rows}
+        with st.spinner("Updating recommendations..."):
+            resp = make_api_request("post", "update_recommendations", json=payload)
+
+        if resp:
+            st.session_state["recommend_notice"] = (
+                f"Recommendations updated for {account} (periodid={resp.get('periodid')}). "
+                f"Updated rows: {resp.get('updated_rows')}."
+            )
+            st.session_state["recommend_upload_version"] = st.session_state.get("recommend_upload_version", 0) + 1
+            st.rerun()
+        else:
+            st.error("Server did not confirm the update.")
 
 def offerings_tab():
     st.header("Product Offerings")
@@ -521,24 +767,14 @@ def main():
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
-    # Add new tab
-# replace your current tabs tuple in main() with this
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Product Offerings", "Usage Tracking", "Update Ranks"]
+    t1, t2, t3, t4 = st.tabs(
+        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations"]
     )
-    
-    with t1:
-        initial_setup_tab()
-    with t2:
-        contacts_tab()
-    with t3:
-        offerings_tab()
-   # <-- new
-    with t4:
-        usage_tracking_tab()
-    with t5:
-        ranks_tab()
 
+    with t1: initial_setup_tab()
+    with t2: contacts_tab()
+    with t3: ranks_tab()
+    with t4: update_recommendation_tab()
 
 
 if __name__ == "__main__":
