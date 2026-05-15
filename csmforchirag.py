@@ -1,4 +1,6 @@
+import json
 import os
+import time
 import requests
 import streamlit as st
 import logging
@@ -135,7 +137,14 @@ def initialize_session_state():
         # NEW for Update Ranks
         'manual_rows': [],             # holds rows for manual entry
         'ranks_upload_version': 0,     # remounts the Excel uploader after success
-        'ranks_notice': None           # one-shot success toast
+        'ranks_notice': None,          # one-shot success toast
+
+        # NEW for Run new scripts
+        'delta_selected_accounts': [],
+        'delta_batch_id': '',
+        'delta_last_status': None,
+        'delta_recovered': False,
+        'delta_notice': None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
