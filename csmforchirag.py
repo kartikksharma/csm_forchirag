@@ -765,6 +765,235 @@ def offerings_tab():
                 st.error(f"Failed to download product offerings: {e}")
                 logger.error(f"Download failed: {e}")
 
+_DELTA_HISTORY_LABELS = {
+    "in_progress": "🔵 In progress",
+    "completed": "✅ Completed",
+    "failed": "❌ Failed",
+    "completed_with_errors": "⚠️ Completed w/ errors",
+    "timeout": "⏱️ Timed out",
+    "interrupted": "🟡 Interrupted",
+}
+
+_DELTA_SCRIPT_ICONS = {
+    "queued": "⏳",
+    "running": "🔵",
+    "success": "✅",
+    "failed": "❌",
+    "timeout": "⏱️",
+    "skipped": "⏭️",
+    "interrupted": "🟡",
+}
+
+
+def _build_delta_history_df(accounts_sorted, history):
+    import pandas as pd
+    rows = []
+    for name in accounts_sorted:
+        rec = history.get(name) if isinstance(history, dict) else None
+        if not rec:
+            rows.append({"Account": name, "Last Run": "—", "Status": "Never run", "Scripts": ""})
+            continue
+        st_label = _DELTA_HISTORY_LABELS.get(rec.get("status"), rec.get("status") or "")
+        ts = rec.get("finished_at") if rec.get("status") != "in_progress" else rec.get("started_at")
+        scripts_done = rec.get("scripts_succeeded")
+        scripts_tot = rec.get("scripts_total")
+        scripts_txt = f"{scripts_done}/{scripts_tot}" if scripts_tot else ""
+        rows.append({
+            "Account": name,
+            "Last Run": ts or "—",
+            "Status": st_label,
+            "Scripts": scripts_txt,
+        })
+    return pd.DataFrame(rows)
+
+
+def _build_delta_detail_df(batch):
+    import pandas as pd
+    scripts = batch.get("scripts", []) or []
+    accounts = batch.get("accounts", {}) or {}
+    rows = []
+    total = 0
+    done = 0
+    for name in sorted(accounts.keys()):
+        acct = accounts[name]
+        row = {
+            "Account": name,
+            "Status": _DELTA_SCRIPT_ICONS.get(acct.get("status"), acct.get("status") or ""),
+        }
+        for s in scripts:
+            srec = (acct.get("scripts") or {}).get(s) or {}
+            sstatus = srec.get("status") or ""
+            row[s] = _DELTA_SCRIPT_ICONS.get(sstatus, sstatus)
+            if acct.get("status") != "skipped":
+                total += 1
+                if sstatus in ("success", "failed", "timeout", "interrupted"):
+                    done += 1
+        rows.append(row)
+    return pd.DataFrame(rows), total, done
+
+
+def run_scripts_tab():
+    """Multi-select accounts and run the delta_scripts.yaml pipeline in parallel."""
+    st.header("Run new scripts")
+    disabled = not st.session_state.setup_complete
+
+    if disabled:
+        st.info("Complete Initial Setup to enable this section.")
+        return
+
+    if st.session_state.get("delta_notice"):
+        st.success(st.session_state["delta_notice"])
+        st.session_state["delta_notice"] = None
+
+    customer_id = st.session_state["customer_id"]
+
+    # First-render recovery from server-side persisted state
+    if not st.session_state.get("delta_recovered"):
+        latest = make_api_request("get", "delta_batch_latest", params={"customer_id": customer_id})
+        if latest and latest.get("batch"):
+            b = latest["batch"]
+            st.session_state["delta_batch_id"] = b.get("batch_id", "")
+            st.session_state["delta_last_status"] = b.get("status")
+        st.session_state["delta_recovered"] = True
+
+    accounts_sorted = sorted(st.session_state.get("account_names", []) or [])
+
+    # Pull history once for the static (pre-poll) render
+    history_resp = make_api_request("get", "account_run_history", params={"customer_id": customer_id})
+    history = (history_resp or {}).get("history", {}) or {}
+
+    st.subheader("Account run history")
+    st.caption(
+        "Most recent delta-scripts run per account for this customer. "
+        "Blank means the account has never been run."
+    )
+    st.dataframe(
+        _build_delta_history_df(accounts_sorted, history),
+        width="stretch",
+        hide_index=True,
+    )
+
+    is_running = st.session_state.get("delta_last_status") in ("queued", "running")
+
+    st.subheader("Select accounts to run")
+    if is_running:
+        st.info(
+            f"A batch is currently running for this customer "
+            f"(batch_id={st.session_state.get('delta_batch_id')}). "
+            "Wait for it to finish before launching another."
+        )
+
+    default_sel = [a for a in st.session_state.get("delta_selected_accounts", []) if a in accounts_sorted]
+    selected = st.multiselect(
+        "Accounts",
+        options=accounts_sorted,
+        default=default_sel,
+        disabled=is_running,
+        key="delta_multiselect",
+        help="Pick one or more accounts; each runs in its own thread (max 4 in parallel).",
+    )
+    st.session_state["delta_selected_accounts"] = selected
+
+    run_disabled = is_running or not selected
+    if st.button("Run scripts", disabled=run_disabled, type="primary"):
+        with st.spinner("Launching batch..."):
+            resp = make_api_request(
+                "post",
+                "start_delta_batch",
+                data={"customer_id": customer_id, "accounts": json.dumps(selected)},
+            )
+        if resp and resp.get("success"):
+            st.session_state["delta_batch_id"] = resp["batch_id"]
+            st.session_state["delta_last_status"] = "running"
+            unres = resp.get("accounts_unresolved") or []
+            note = (
+                f"Batch {resp['batch_id']} launched for {resp['accounts_resolved']} account(s)."
+            )
+            if unres:
+                note += f" Skipped (not in d_input_account): {', '.join(unres)}"
+            st.session_state["delta_notice"] = note
+            st.rerun()
+        else:
+            st.error("Failed to launch batch. Check server logs.")
+
+    batch_id = st.session_state.get("delta_batch_id", "")
+    if not batch_id:
+        return
+
+    st.divider()
+    st.subheader(f"Latest batch — {batch_id}")
+
+    history_box = st.empty()
+    status_box = st.empty()
+    progress_bar = st.progress(0.0)
+    summary_text = st.empty()
+    errors_box = st.empty()
+
+    terminal = {"completed", "completed_with_errors", "failed", "interrupted"}
+    start = time.time()
+    poll_cap_s = 2 * 60 * 60  # self-cap polling at 2 hours; user can refresh to keep watching
+
+    while True:
+        resp = make_api_request(
+            "get",
+            "delta_batch_status",
+            params={"customer_id": customer_id, "batch_id": batch_id},
+        )
+        if not resp:
+            status_box.warning("Unable to fetch batch status.")
+            break
+
+        batch = resp.get("batch")
+        if not batch:
+            status_box.warning("Batch not found on server.")
+            st.session_state["delta_batch_id"] = ""
+            break
+
+        hist_resp = make_api_request("get", "account_run_history", params={"customer_id": customer_id})
+        hist = (hist_resp or {}).get("history", {}) or {}
+        history_box.dataframe(
+            _build_delta_history_df(accounts_sorted, hist),
+            width="stretch",
+            hide_index=True,
+        )
+
+        detail_df, total, done = _build_delta_detail_df(batch)
+        status_box.dataframe(detail_df, width="stretch", hide_index=True)
+        progress_bar.progress(0.0 if total == 0 else min(1.0, done / total))
+
+        b_status = batch.get("status")
+        st.session_state["delta_last_status"] = b_status
+        summary_text.markdown(
+            f"**Batch status:** `{b_status}`  |  "
+            f"**Scripts done:** {done}/{total}  |  "
+            f"**Started:** {batch.get('started_at') or '—'}  |  "
+            f"**Finished:** {batch.get('finished_at') or '—'}"
+        )
+
+        failed = [
+            (name, acct.get("error"))
+            for name, acct in (batch.get("accounts") or {}).items()
+            if acct.get("status") in ("failed", "timeout") and acct.get("error")
+        ]
+        if failed:
+            with errors_box.container():
+                st.markdown("**Failed accounts:**")
+                for name, err in failed:
+                    with st.expander(f"❌ {name}"):
+                        st.code((err or "")[-2000:])
+        else:
+            errors_box.empty()
+
+        if b_status in terminal:
+            break
+
+        if time.time() - start > poll_cap_s:
+            st.warning("Polling capped at 2 hours. Refresh the page to keep watching the batch.")
+            break
+
+        time.sleep(4)
+
+
 # --- Main ---
 def main():
     st.title("CSM Backend Portal - Next Quarter")
@@ -776,14 +1005,15 @@ def main():
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
-    t1, t2, t3, t4 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations"]
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations", "Run new scripts"]
     )
 
     with t1: initial_setup_tab()
     with t2: contacts_tab()
     with t3: ranks_tab()
     with t4: update_recommendation_tab()
+    with t5: run_scripts_tab()
 
 
 if __name__ == "__main__":
