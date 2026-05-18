@@ -794,7 +794,7 @@ def _build_delta_history_df(accounts_sorted, history):
 
 def run_scripts_tab():
     """Multi-select accounts and run the delta_scripts.yaml pipeline in parallel."""
-    st.header("Run new scripts")
+    st.header("Update New UI Data")
     disabled = not st.session_state.setup_complete
 
     if disabled:
