@@ -138,7 +138,7 @@ def initialize_session_state():
         'ranks_upload_version': 0,     # remounts the Excel uploader after success
         'ranks_notice': None,          # one-shot success toast
 
-        # NEW for Run new scripts
+        # NEW for Update New UI Data
         'delta_selected_accounts': [],
         'delta_notice': None,
     }
@@ -886,7 +886,7 @@ def main():
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
     t1, t2, t3, t4, t5 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations", "Run new scripts"]
+        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations", "Update New UI Data"]
     )
 
     with t1: initial_setup_tab()
