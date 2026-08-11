@@ -138,9 +138,11 @@ def initialize_session_state():
         'ranks_upload_version': 0,     # remounts the Excel uploader after success
         'ranks_notice': None,          # one-shot success toast
 
-        # NEW for Update New UI Data
-        'delta_selected_accounts': [],
-        'delta_notice': None,
+        # Batch tabs (splitter / contacts / news) are built from the server's
+        # YAML configs; per-batch selection, mode and notice keys are created
+        # on demand in batch_tab() as `batch_*_<batch_type>`.
+        'batch_types': None,
+        'batch_types_customer': None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -761,7 +763,7 @@ def offerings_tab():
                 st.error(f"Failed to download product offerings: {e}")
                 logger.error(f"Download failed: {e}")
 
-_DELTA_HISTORY_LABELS = {
+_BATCH_HISTORY_LABELS = {
     "in_progress": "🔵 In progress",
     "completed": "✅ Completed",
     "failed": "❌ Failed",
@@ -770,105 +772,191 @@ _DELTA_HISTORY_LABELS = {
     "interrupted": "🟡 Interrupted",
 }
 
-def _build_delta_history_df(accounts_sorted, history):
+
+def _build_batch_history_df(accounts_sorted, history, mode_labels=None):
+    """One row per account: its most recent run of THIS batch."""
     import pandas as pd
     rows = []
     for name in accounts_sorted:
         rec = history.get(name) if isinstance(history, dict) else None
         if not rec:
-            rows.append({"Account": name, "Last Run": "—", "Status": "Never run", "Progress": ""})
+            row = {"Account": name, "Last Run": "—", "Status": "Never run", "Progress": ""}
+            if mode_labels:
+                row["Mode"] = ""
+            rows.append(row)
             continue
-        st_label = _DELTA_HISTORY_LABELS.get(rec.get("status"), rec.get("status") or "")
-        ts = rec.get("finished_at") if rec.get("status") != "in_progress" else rec.get("started_at")
+
+        status = rec.get("status")
         scripts_done = rec.get("scripts_succeeded")
         scripts_tot = rec.get("scripts_total")
-        scripts_txt = f"{scripts_done}/{scripts_tot}" if scripts_tot else ""
-        rows.append({
+        row = {
             "Account": name,
-            "Last Run": ts or "—",
-            "Status": st_label,
-            "Progress": scripts_txt,
-        })
-    return pd.DataFrame(rows)
+            "Last Run": (rec.get("started_at") if status == "in_progress" else rec.get("finished_at")) or "—",
+            "Status": _BATCH_HISTORY_LABELS.get(status, status or ""),
+            "Progress": f"{scripts_done}/{scripts_tot}" if scripts_tot else "",
+        }
+        if mode_labels:
+            row["Mode"] = mode_labels.get(rec.get("mode"), rec.get("mode") or "")
+        rows.append(row)
+
+    cols = ["Account", "Last Run", "Status", "Progress"] + (["Mode"] if mode_labels else [])
+    return pd.DataFrame(rows, columns=cols)
 
 
-def run_scripts_tab():
-    """Multi-select accounts and run the delta_scripts.yaml pipeline in parallel."""
-    st.header("Update New UI Data")
-    disabled = not st.session_state.setup_complete
+def get_batch_types():
+    """Batch tabs are driven by the server's YAML configs, so nothing about the
+    batches (labels, modes, script lists) is duplicated in the frontend."""
+    customer_id = st.session_state.get("customer_id") or ""
+    if (
+        st.session_state.get("batch_types") is not None
+        and st.session_state.get("batch_types_customer") == customer_id
+    ):
+        return st.session_state["batch_types"]
 
-    if disabled:
+    resp = make_api_request("get", "batch_types", params={"customer_id": customer_id})
+    types = (resp or {}).get("batch_types")
+    if types is None:
+        return None  # backend unreachable — caller reports it
+    st.session_state["batch_types"] = types
+    st.session_state["batch_types_customer"] = customer_id
+    return types
+
+
+def batch_tab(batch: dict):
+    """Multi-select accounts and run one YAML-defined batch across them."""
+    key = batch.get("key") or "batch"
+    st.header(batch.get("label") or key)
+    if batch.get("description"):
+        st.caption(batch["description"])
+
+    if batch.get("error"):
+        st.error(f"Batch configuration problem: {batch['error']}")
+        return
+
+    if not st.session_state.setup_complete:
         st.info("Complete Initial Setup to enable this section.")
         return
 
-    if st.session_state.get("delta_notice"):
-        st.success(st.session_state["delta_notice"])
-        st.session_state["delta_notice"] = None
+    notice_key = f"batch_notice_{key}"
+    if st.session_state.get(notice_key):
+        st.success(st.session_state[notice_key])
+        st.session_state[notice_key] = None
 
     customer_id = st.session_state["customer_id"]
     accounts_sorted = sorted(st.session_state.get("account_names", []) or [])
+    modes = batch.get("modes") or []
+    mode_labels = {m["key"]: m.get("label") or m["key"] for m in modes}
 
-    history_resp = make_api_request("get", "account_run_history", params={"customer_id": customer_id})
-    history = (history_resp or {}).get("history", {}) or {}
-
-    in_progress_accounts = sorted(
-        name for name, rec in history.items()
-        if isinstance(rec, dict) and rec.get("status") == "in_progress"
+    resp = make_api_request(
+        "get", "batch_account_history",
+        params={"customer_id": customer_id, "batch_type": key},
     )
+    if resp is None:
+        return
+    history = resp.get("history") or {}
+    # {accountname: batch_type} — an account held by ANY batch, since the server
+    # locks accounts across batches.
+    busy = resp.get("busy") or {}
+
+    all_types = st.session_state.get("batch_types") or []
+    type_labels = {b.get("key"): (b.get("label") or b.get("key")) for b in all_types}
+    type_labels.setdefault("update_new_ui_data", "Update New UI Data (retired)")
 
     st.subheader("Account run history")
     st.caption(
-        "Most recent delta-scripts run per account for this customer. "
-        "Blank means the account has never been run. "
+        f"Most recent **{batch.get('label') or key}** run per account for this customer. "
+        "\"Never run\" means this batch has not been run for that account. "
         "Click Refresh to fetch the latest progress."
     )
 
-    if st.button("Refresh", key="delta_refresh"):
+    if st.button("Refresh", key=f"batch_refresh_{key}"):
+        # Also drop the cached batch definitions, so a YAML edit on the server
+        # (a changed script list or label) shows up without restarting the app.
+        st.session_state["batch_types"] = None
         st.rerun()
 
     st.dataframe(
-        _build_delta_history_df(accounts_sorted, history),
+        _build_batch_history_df(accounts_sorted, history, mode_labels if modes else None),
         width="stretch",
         hide_index=True,
     )
 
     st.subheader("Select accounts to run")
-    if in_progress_accounts:
+    if busy:
         st.info(
             "Currently running and excluded from selection: "
-            + ", ".join(in_progress_accounts)
+            + ", ".join(
+                f"{name} (in {type_labels.get(bt, bt)})"
+                for name, bt in sorted(busy.items())
+            )
         )
 
-    selectable_accounts = [a for a in accounts_sorted if a not in in_progress_accounts]
-    default_sel = [
-        a for a in st.session_state.get("delta_selected_accounts", [])
-        if a in selectable_accounts
-    ]
+    selectable_accounts = [a for a in accounts_sorted if a not in busy]
+    sel_key = f"batch_selected_{key}"
+    # A launch asks for the selection to be cleared on the NEXT run: this key
+    # belongs to the multiselect, and Streamlit forbids writing a widget's key
+    # once the widget has been instantiated.
+    if st.session_state.pop(f"batch_clear_{key}", False):
+        st.session_state[sel_key] = []
+    # Drop any previously-selected account that is no longer selectable before
+    # the widget is created, so the stored value always matches the options.
+    if sel_key in st.session_state:
+        st.session_state[sel_key] = [
+            a for a in st.session_state[sel_key] if a in selectable_accounts
+        ]
     selected = st.multiselect(
         "Accounts",
         options=selectable_accounts,
-        default=default_sel,
-        key="delta_multiselect",
-        help="Pick one or more accounts; each runs in its own thread (max 4 in parallel).",
+        key=sel_key,
+        help=(
+            "Pick one or more accounts; each runs in its own thread "
+            f"(max {batch.get('max_workers', 4)} in parallel)."
+        ),
     )
-    st.session_state["delta_selected_accounts"] = selected
 
-    if st.button("Run scripts", disabled=not selected, type="primary"):
+    chosen_mode = None
+    if modes:
+        st.subheader("Run mode")
+        default_idx = next((i for i, m in enumerate(modes) if m.get("default")), 0)
+        chosen_label = st.radio(
+            "Mode",
+            [mode_labels[m["key"]] for m in modes],
+            index=default_idx,
+            horizontal=True,
+            key=f"batch_mode_{key}",
+        )
+        chosen_mode = next(m["key"] for m in modes if mode_labels[m["key"]] == chosen_label)
+
+    scripts = (batch.get("scripts_by_mode") or {}).get(chosen_mode) or batch.get("scripts") or []
+    with st.expander(f"Scripts in this batch ({len(scripts)})"):
+        st.caption(
+            "Resolved for this customer and mode, in run order. Edit the batch's "
+            "YAML file on the server to change this list."
+        )
+        st.code("\n".join(f"{i}. {s}" for i, s in enumerate(scripts, start=1)) or "—")
+
+    if st.button("Run batch", disabled=not selected, type="primary", key=f"batch_run_{key}"):
+        payload = {
+            "customer_id": customer_id,
+            "batch_type": key,
+            "accounts": json.dumps(selected),
+        }
+        if chosen_mode:
+            payload["mode"] = chosen_mode
+
         with st.spinner("Launching batch..."):
-            resp = make_api_request(
-                "post",
-                "start_delta_batch",
-                data={"customer_id": customer_id, "accounts": json.dumps(selected)},
-            )
+            resp = make_api_request("post", "start_batch", data=payload)
+
         if resp and resp.get("success"):
+            note = f"Batch {resp['batch_id']} launched for {resp['accounts_resolved']} account(s)"
+            if resp.get("mode"):
+                note += f" in {mode_labels.get(resp['mode'], resp['mode'])} mode"
+            note += f" ({resp.get('scripts')} script(s) each)."
             unres = resp.get("accounts_unresolved") or []
-            note = (
-                f"Batch {resp['batch_id']} launched for {resp['accounts_resolved']} account(s)."
-            )
             if unres:
                 note += f" Skipped (not in d_input_account): {', '.join(unres)}"
-            st.session_state["delta_notice"] = note
-            st.session_state["delta_selected_accounts"] = []
+            st.session_state[notice_key] = note
+            st.session_state[f"batch_clear_{key}"] = True
             st.rerun()
         else:
             st.error("Failed to launch batch. Check server logs.")
@@ -885,15 +973,31 @@ def main():
             st.markdown(f"**ID:** {st.session_state['customer_id']}")
             st.markdown(f"**Accounts:** {len(st.session_state.get('account_names', []))}")
 
-    t1, t2, t3, t4, t5 = st.tabs(
-        ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations", "Update New UI Data"]
-    )
+    base_labels = ["Initial Setup", "Manage Contacts", "Update Ranks", "Update Recommendations"]
+    base_tabs = [initial_setup_tab, contacts_tab, ranks_tab, update_recommendation_tab]
 
-    with t1: initial_setup_tab()
-    with t2: contacts_tab()
-    with t3: ranks_tab()
-    with t4: update_recommendation_tab()
-    with t5: run_scripts_tab()
+    batch_types = get_batch_types()
+    batches = batch_types or []
+    labels = base_labels + [b.get("label") or b.get("key") for b in batches]
+    if batch_types is None:
+        labels.append("Batches")
+
+    tabs = st.tabs(labels)
+
+    for tab, render in zip(tabs, base_tabs):
+        with tab:
+            render()
+
+    for tab, batch in zip(tabs[len(base_tabs):], batches):
+        with tab:
+            batch_tab(batch)
+
+    if batch_types is None:
+        with tabs[-1]:
+            st.error(
+                "Could not load the batch definitions from the server. "
+                "Check that the backend is reachable and that the batch YAML files exist."
+            )
 
 
 if __name__ == "__main__":
