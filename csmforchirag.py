@@ -823,11 +823,12 @@ def get_batch_types():
 
 
 def batch_tab(batch: dict):
-    """Multi-select accounts and run one YAML-defined batch across them."""
+    """Multi-select accounts and run one YAML-defined batch across them.
+
+    The tab label already names the batch, so this opens straight on the
+    account run history instead of repeating the name and description.
+    """
     key = batch.get("key") or "batch"
-    st.header(batch.get("label") or key)
-    if batch.get("description"):
-        st.caption(batch["description"])
 
     if batch.get("error"):
         st.error(f"Batch configuration problem: {batch['error']}")
@@ -864,14 +865,14 @@ def batch_tab(batch: dict):
 
     st.subheader("Account run history")
     st.caption(
-        f"Most recent **{batch.get('label') or key}** run per account for this customer. "
+        "Most recent run of this batch per account for this customer. "
         "\"Never run\" means this batch has not been run for that account. "
         "Click Refresh to fetch the latest progress."
     )
 
     if st.button("Refresh", key=f"batch_refresh_{key}"):
         # Also drop the cached batch definitions, so a YAML edit on the server
-        # (a changed script list or label) shows up without restarting the app.
+        # (a changed label or mode) shows up without restarting the app.
         st.session_state["batch_types"] = None
         st.rerun()
 
@@ -926,14 +927,6 @@ def batch_tab(batch: dict):
             key=f"batch_mode_{key}",
         )
         chosen_mode = next(m["key"] for m in modes if mode_labels[m["key"]] == chosen_label)
-
-    scripts = (batch.get("scripts_by_mode") or {}).get(chosen_mode) or batch.get("scripts") or []
-    with st.expander(f"Scripts in this batch ({len(scripts)})"):
-        st.caption(
-            "Resolved for this customer and mode, in run order. Edit the batch's "
-            "YAML file on the server to change this list."
-        )
-        st.code("\n".join(f"{i}. {s}" for i, s in enumerate(scripts, start=1)) or "—")
 
     if st.button("Run batch", disabled=not selected, type="primary", key=f"batch_run_{key}"):
         payload = {
